@@ -251,6 +251,54 @@ std::tuple<at::Tensor, at::Tensor> HullHullDistanceBackwardCpu(
   return std::make_tuple(grad_as, grad_bs);
 }
 
+template <int H1, int H2>
+std::tuple<at::Tensor, at::Tensor> VMAPHullHullDistanceBackwardCpu(
+    const at::Tensor& as,
+    const at::Tensor& bs,
+    const at::Tensor& idx_bs,
+    const at::Tensor& grad_dists,
+    const double min_triangle_area) {
+  // H1 = 1, H2 = 3
+  const int64_t A_N = as.size(0);
+
+  TORCH_CHECK(idx_bs.size(0) == A_N);
+  TORCH_CHECK(grad_dists.size(0) == A_N);
+  ValidateShape<H1>(as);
+  ValidateShape<H2>(bs);
+
+  // at::Tensor grad_as = at::zeros_like(as);
+  at::Tensor grad_as = at::zeros({A_N, A_N, 3}, as.options());
+  at::Tensor grad_bs = at::zeros_like(bs);
+
+  auto as_a = as.accessor < float, H1 == 1 ? 2 : 3 > ();
+  auto bs_a = bs.accessor < float, H2 == 1 ? 2 : 3 > ();
+  // auto grad_as_a = grad_as.accessor < float, H1 == 1 ? 2 : 3 > ();
+  auto grad_as_a = grad_as.accessor<float, 3>();
+  auto grad_bs_a = grad_bs.accessor < float, H2 == 1 ? 2 : 3 > ();
+  auto idx_bs_a = idx_bs.accessor<int64_t, 1>();
+  // auto grad_dists_a = grad_dists.accessor<float, 1>();
+  auto grad_dists_a = grad_dists.accessor<float, 2>();
+
+  for (int64_t p = 0; p < A_N; ++p) {
+    auto grad_dist = grad_dists_a[p];
+    auto grad_a = grad_as_a[p];
+    for (int64_t a_n = 0; a_n < A_N; ++a_n) {
+      auto a = ExtractHull<H1>(as_a[a_n]);
+      auto b = ExtractHull<H2>(bs_a[idx_bs_a[a_n]]);
+      HullHullDistanceBackward(
+          a, // 1
+          b, // 3
+          // grad_dists_a[a_n], // 1
+          grad_dist[a_n], // 1
+          // grad_as_a[a_n], // 1
+          grad_a[a_n], // 1
+          grad_bs_a[idx_bs_a[a_n]],
+          min_triangle_area);
+    }
+  }
+  return std::make_tuple(grad_as, grad_bs);
+}
+
 template <int H>
 torch::Tensor PointHullArrayDistanceForwardCpu(
     const torch::Tensor& points,
@@ -334,8 +382,15 @@ std::tuple<torch::Tensor, torch::Tensor> PointFaceDistanceBackwardCpu(
     const torch::Tensor& idx_points,
     const torch::Tensor& grad_dists,
     const double min_triangle_area) {
-  return HullHullDistanceBackwardCpu<1, 3>(
-      points, tris, idx_points, grad_dists, min_triangle_area);
+  // std::cout << grad_dists.sizes() << std::endl;
+  // std::cout << grad_dists.sizes().size() << std:endl;
+  if (grad_dists.sizes().size() == 1) {
+    return HullHullDistanceBackwardCpu<1, 3>(
+        points, tris, idx_points, grad_dists, min_triangle_area);
+  } else {
+    return VMAPHullHullDistanceBackwardCpu<1, 3>(
+        points, tris, idx_points, grad_dists, min_triangle_area);
+  }
 }
 
 std::tuple<torch::Tensor, torch::Tensor> FacePointDistanceForwardCpu(
